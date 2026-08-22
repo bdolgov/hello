@@ -1,0 +1,19 @@
+# Code owners.
+#
+# Every path here requires review from the listed owner before merging.
+
+# Everything, by default.
+*                       @Daemon125
+
+# The program itself. Six lines, unchanged since 1999, and the only file in
+# the repository where a change alters what the software does.
+/hello.c                @Daemon125
+
+# The pipeline is the repository's only externally-sourced code and the only
+# part of it that changes without anyone editing this repository.
+/.github/workflows/     @Daemon125
+/.github/dependabot.yml @Daemon125
+
+# Documentation whose quantitative claims are asserted by tests/05-docs.sh.
+/README.md              @Daemon125
+/INSTRUCTIONS.md        @Daemon125

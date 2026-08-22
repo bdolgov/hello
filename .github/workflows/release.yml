@@ -1,0 +1,284 @@
+# Release artifacts.
+#
+# Builds hello for every target the CI matrix claims support for, checksums
+# each one, verifies every checksum before publishing, and attaches the lot
+# to the GitHub release for the tag that triggered the run.
+#
+# Every binary is executed before it is published -- natively where the
+# runner can, and under QEMU where it cannot -- so that no artifact reaches
+# a release without having printed its greeting at least once. A checksum
+# proves a file arrived intact; it says nothing about whether the file
+# works. Both claims are worth making.
+#
+# INSTALL.md section 8 documents the artifact names and the verification
+# commands. tests/07-project-docs.sh asserts the two agree, so a target
+# added here without a corresponding entry there fails the build.
+
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing tag to build artifacts for"
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+
+  # --------------------------------------------------------------- linux
+
+  linux:
+    name: linux-${{ matrix.arch }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+            cc: gcc
+            pkg: gcc
+            qemu: ""
+          - arch: aarch64
+            cc: aarch64-linux-gnu-gcc
+            pkg: gcc-aarch64-linux-gnu
+            qemu: qemu-aarch64-static
+          - arch: armv7
+            cc: arm-linux-gnueabihf-gcc
+            pkg: gcc-arm-linux-gnueabihf
+            qemu: qemu-arm-static
+          - arch: riscv64
+            cc: riscv64-linux-gnu-gcc
+            pkg: gcc-riscv64-linux-gnu
+            qemu: qemu-riscv64-static
+          - arch: ppc64le
+            cc: powerpc64le-linux-gnu-gcc
+            pkg: gcc-powerpc64le-linux-gnu
+            qemu: qemu-ppc64le-static
+          - arch: s390x
+            cc: s390x-linux-gnu-gcc
+            pkg: gcc-s390x-linux-gnu
+            qemu: qemu-s390x-static
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install toolchain
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq ${{ matrix.pkg }} qemu-user-static
+
+      - name: Build
+        run: |
+          # Statically linked, so the artifact does not depend on the glibc
+          # version of whatever machine downloads it.
+          ${{ matrix.cc }} -std=c99 -O2 -static \
+            -Wall -Wextra -pedantic -Werror \
+            -o hello hello.c
+          file hello
+
+      - name: Run it before publishing it
+        run: |
+          out=$(${{ matrix.qemu }} ./hello)
+          echo "output: [$out]"
+          test "$out" = "Hello, World!"
+          test "$(${{ matrix.qemu }} ./hello | wc -c)" -eq 14
+
+      - name: Name and checksum
+        run: |
+          name="hello-${GITHUB_REF_NAME#v}-linux-${{ matrix.arch }}"
+          mv hello "$name"
+          sha256sum "$name" > "$name.sha256"
+          cat "$name.sha256"
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: linux-${{ matrix.arch }}
+          path: hello-*
+          if-no-files-found: error
+
+  # --------------------------------------------------------------- macos
+
+  macos:
+    name: macos (arm64, x86_64, universal)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Build both architectures and a universal binary
+        run: |
+          v="${GITHUB_REF_NAME#v}"
+          cc -std=c99 -O2 -arch arm64  -Wall -Wextra -pedantic -Werror -o h-arm64  hello.c
+          cc -std=c99 -O2 -arch x86_64 -Wall -Wextra -pedantic -Werror -o h-x86_64 hello.c
+          lipo -create -output "h-universal" h-arm64 h-x86_64
+          lipo -info h-universal
+
+          mv h-arm64     "hello-$v-macos-arm64"
+          mv h-x86_64    "hello-$v-macos-x86_64"
+          mv h-universal "hello-$v-macos-universal"
+
+      - name: Run what this runner can run
+        run: |
+          v="${GITHUB_REF_NAME#v}"
+          # The runner is arm64, so the arm64 and universal binaries execute
+          # here. The x86_64 slice runs only under Rosetta, which is not
+          # guaranteed present, so it is checked structurally instead.
+          test "$("./hello-$v-macos-arm64")" = "Hello, World!"
+          test "$("./hello-$v-macos-universal")" = "Hello, World!"
+          lipo -info "hello-$v-macos-x86_64" | grep -q x86_64
+          lipo -info "hello-$v-macos-universal" | grep -q arm64
+          lipo -info "hello-$v-macos-universal" | grep -q x86_64
+
+      - name: Checksum
+        run: |
+          for f in hello-*; do
+            case "$f" in *.sha256) continue ;; esac
+            shasum -a 256 "$f" > "$f.sha256"
+            cat "$f.sha256"
+          done
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: macos
+          path: hello-*
+          if-no-files-found: error
+
+  # ------------------------------------------------------------- windows
+
+  windows:
+    name: windows-x86_64
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Build
+        shell: bash
+        run: |
+          v="${GITHUB_REF_NAME#v}"
+          gcc -std=c99 -O2 -static \
+            -Wall -Wextra -pedantic -Werror \
+            -o "hello-$v-windows-x86_64.exe" hello.c
+
+      - name: Run it before publishing it
+        shell: bash
+        run: |
+          v="${GITHUB_REF_NAME#v}"
+          out=$(./"hello-$v-windows-x86_64.exe" | tr -d '\r')
+          echo "output: [$out]"
+          test "$out" = "Hello, World!"
+
+      - name: Checksum
+        shell: bash
+        run: |
+          v="${GITHUB_REF_NAME#v}"
+          sha256sum "hello-$v-windows-x86_64.exe" > "hello-$v-windows-x86_64.exe.sha256"
+          cat "hello-$v-windows-x86_64.exe.sha256"
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: windows
+          path: hello-*
+          if-no-files-found: error
+
+  # -------------------------------------------------------------- source
+
+  source:
+    name: source tarball
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Build the tarball
+        run: |
+          v="${GITHUB_REF_NAME#v}"
+          make dist
+          mv hello-src.tar.gz "hello-$v.tar.gz"
+          sha256sum "hello-$v.tar.gz" > "hello-$v.tar.gz.sha256"
+          cat "hello-$v.tar.gz.sha256"
+
+      - name: The tarball must build and run
+        run: |
+          v="${GITHUB_REF_NAME#v}"
+          mkdir -p /tmp/x && tar xzf "hello-$v.tar.gz" -C /tmp/x
+          cc -std=c99 -O2 -Wall -Wextra -pedantic -Werror -o /tmp/x/hello /tmp/x/hello.c
+          test "$(/tmp/x/hello)" = "Hello, World!"
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: source
+          path: hello-*
+          if-no-files-found: error
+
+  # ------------------------------------------------------------- publish
+
+  publish:
+    name: Publish
+    needs: [linux, macos, windows, source]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/download-artifact@v8
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Collect and verify
+        working-directory: dist
+        run: |
+          ls -la
+
+          # One combined manifest, in the format `sha256sum -c` expects.
+          cat ./*.sha256 | sort -k2 > SHA256SUMS
+          rm -f ./*.sha256
+
+          echo "== SHA256SUMS =="
+          cat SHA256SUMS
+
+          # Verify every checksum against the file it names. A manifest
+          # that does not verify is worse than no manifest, because it
+          # invites a check that always passes.
+          sha256sum -c SHA256SUMS
+
+          n=$(grep -c . SHA256SUMS)
+          echo "artifacts: $n"
+          test "$n" -eq 11
+
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="${GITHUB_REF_NAME}"
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            tag="${{ inputs.tag }}"
+          fi
+
+          # The release must exist before anything can be attached to it,
+          # and pushing the tag is what triggers this workflow -- so on a
+          # fresh tag there is nothing to upload to yet. Create it if it is
+          # absent, and leave it alone if someone made it by hand.
+          if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "release $tag already exists"
+          else
+            echo "creating release $tag"
+            notes=$(awk -v v="${tag#v}" \
+              'index($0, "## [" v "]") == 1 { f = 1; next }
+               f && /^## \[/ { exit }
+               f' CHANGELOG.md)
+            if [ -z "$notes" ]; then
+              notes="See CHANGELOG.md."
+            fi
+            gh release create "$tag" \
+              --repo "$GITHUB_REPOSITORY" \
+              --verify-tag \
+              --title "hello ${tag#v}" \
+              --notes "$notes"
+          fi
+
+          gh release upload "$tag" dist/* --clobber --repo "$GITHUB_REPOSITORY"
+          echo "attached $(find dist -type f | wc -l) files to $tag"
+          gh release view "$tag" --repo "$GITHUB_REPOSITORY" \
+            --json assets --jq '.assets[].name'

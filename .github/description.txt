@@ -1,0 +1,1 @@
+Hello World in C: a minimal, well-documented example program for learning C, with a Makefile, man page, install guide, test suite, and cross-platform CI.
